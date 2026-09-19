@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ms">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Scanner Kehadiran Murid</title>
+  <style>
+    :root{font-family:Arial,sans-serif;color:#17352d;background:#f3f7f5}*{box-sizing:border-box}body{margin:0}header{background:#14624d;color:#fff;padding:18px max(18px,calc((100vw - 900px)/2))}h1{font-size:22px;margin:0}main{max-width:900px;margin:auto;padding:22px 18px;display:grid;gap:18px}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.field{display:grid;gap:6px;min-width:150px;flex:1}.field label{font-size:13px;font-weight:700}input,select,button,.file-button{font:inherit;border-radius:6px;padding:10px;border:1px solid #a7bab1;background:#fff}button,.file-button{cursor:pointer;background:#14624d;color:#fff;border-color:#14624d;font-weight:700}button:disabled{opacity:.5;cursor:not-allowed}.secondary{background:#fff;color:#14624d}#reader{width:100%;min-height:280px;background:#142e29;border-radius:6px;overflow:hidden}#reader video{max-height:420px;object-fit:cover}.status{padding:14px;background:#fff;border-left:4px solid #14624d;min-height:60px;white-space:pre-wrap}.status.error{border-color:#ad413b}#manual{display:flex;gap:8px}#manual input{min-width:0;flex:1}.subtle{font-size:13px;color:#536d63}a{color:#14624d}@media(max-width:600px){main{padding:16px}.toolbar>*{flex:1}#manual{flex-wrap:wrap}}
+  </style>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+  <header><h1>Scanner Kehadiran Murid</h1></header>
+  <main>
+    <div class="toolbar">
+      <div class="field"><label for="direction">Arah kehadiran</label><select id="direction"><option>Masuk</option><option>Keluar</option></select></div>
+      <button id="start" type="button">Hidupkan kamera</button><button id="stop" class="secondary" type="button">Hentikan</button>
+      <label class="file-button secondary">Imbas gambar<input id="image" type="file" accept="image/*" hidden></label>
+    </div>
+    <div id="reader" aria-label="Paparan kamera"></div>
+    <div id="status" class="status" role="status">Memeriksa sesi scanner…</div>
+    <form id="manual"><input id="tokenInput" maxlength="200" autocomplete="off" placeholder="Token QR atau scanner USB" required><button id="submitToken">Rekod</button></form>
+    <div class="subtle">Rekod disimpan ke Kehadiran Murid dalam Portal Guru. Sesi scanner tamat selepas 30 minit. <a id="portalLink" href="#">Buka Portal Guru</a></div>
+  </main>
+  <script>
+    'use strict';
+    const $=id=>document.getElementById(id);
+    const params=new URLSearchParams(location.hash.slice(1));
+    const apiUrl=params.get('portal')||'';
+    const session=params.get('session')||'';
+    const validApi=(()=>{try{const u=new URL(apiUrl);return u.protocol==='https:'&&u.hostname==='script.google.com'&&/^\/macros\/s\/[^/]+\/exec$/.test(u.pathname);}catch{return false;}})();
+    const ready=validApi&&/^[a-f0-9-]{36}$/i.test(session);
+    let scanner=null,starting=false,busy=false,lastToken='',lastAt=0;
+    const status=(message,error=false)=>{$('status').textContent=message;$('status').classList.toggle('error',error);};
+    if(ready){$('portalLink').href=apiUrl;status('Sedia untuk mengimbas QR murid.');}else{status('Buka scanner melalui menu Kehadiran pelajar dalam Portal Guru.',true);$('start').disabled=true;$('submitToken').disabled=true;}
+    function requestScan(token,direction,requestId){return new Promise((resolve,reject)=>{
+      const callback='scanCallback_'+crypto.randomUUID().replace(/-/g,'');
+      const script=document.createElement('script');
+      let finished=false;
+      const finish=(error,result)=>{if(finished)return;finished=true;clearTimeout(timer);delete window[callback];script.remove();error?reject(error):resolve(result);};
+      const timer=setTimeout(()=>finish(new Error('Sambungan mengambil masa terlalu lama. Semak Sheet sebelum cuba lagi.')),20000);
+      window[callback]=result=>finish(null,result);
+      script.onerror=()=>finish(new Error('Tidak dapat menghubungi Portal Guru. Semak URL deployment dan akses Web app.'));
+      const url=new URL(apiUrl);url.search=new URLSearchParams({action:'scanStudent',session,token,direction,requestId,callback}).toString();
+      script.src=url.href;document.head.append(script);
+    });}
+    async function submit(token){token=String(token||'').trim();if(!ready||!token||busy)return;if(token.length>200){status('Token QR terlalu panjang.',true);return;}if(token===lastToken&&Date.now()-lastAt<5000)return;lastToken=token;lastAt=Date.now();busy=true;$('submitToken').disabled=true;status('Menyemak dan merekod kehadiran…');try{const result=await requestScan(token,$('direction').value,crypto.randomUUID());status(result.message||'Rekod diterima.',!result.success);}catch(error){status(error.message||String(error),true);}finally{busy=false;$('submitToken').disabled=false;$('tokenInput').value='';}}
+    async function stop(){if(!scanner)return;const current=scanner;scanner=null;try{if(current.isScanning)await current.stop();}catch{}try{await current.clear();}catch{}}
+    $('start').onclick=async()=>{if(!ready||starting||scanner?.isScanning)return;starting=true;$('start').disabled=true;try{if(!window.Html5Qrcode)throw new Error('Pustaka QR gagal dimuatkan. Semak sambungan internet.');if(!navigator.mediaDevices?.getUserMedia)throw new Error('Kamera memerlukan HTTPS dan izin pelayar.');await stop();scanner=new Html5Qrcode('reader',{verbose:false});const config={fps:10,qrbox:(w,h)=>{const size=Math.floor(Math.min(w,h)*.68);return {width:size,height:size};}};try{await scanner.start({facingMode:'environment'},config,submit,()=>{});}catch(error){if(!/NotFoundError|OverconstrainedError|not found|no camera|constraints/i.test(String(error?.name||'')+' '+String(error?.message||error)))throw error;const cameras=await Html5Qrcode.getCameras();if(!cameras.length)throw error;await scanner.start(cameras[0].id,config,submit,()=>{});}status('Kamera aktif. Halakan kepada QR murid.');}catch(error){await stop();status('Kamera tidak dapat dibuka: '+(error?.message||String(error)),true);}finally{starting=false;$('start').disabled=false;}};
+    $('stop').onclick=async()=>{await stop();status('Kamera dihentikan.');};
+    $('image').onchange=async event=>{const file=event.target.files[0];if(!file)return;try{if(!window.Html5Qrcode)throw new Error('Pustaka QR gagal dimuatkan.');await stop();const reader=new Html5Qrcode('reader',{verbose:false});try{await submit(await reader.scanFile(file,false));}finally{await reader.clear();}}catch(error){status(error?.message||String(error),true);}event.target.value='';};
+    $('manual').onsubmit=event=>{event.preventDefault();submit($('tokenInput').value);};
+    window.addEventListener('pagehide',stop);
+  </script>
+</body>
+</html>
